@@ -91,6 +91,7 @@ typedef struct container_record {
     unsigned long hard_limit_bytes;
     int exit_code;
     int exit_signal;
+    int stop_requested;
     char log_path[PATH_MAX];
     struct container_record *next;
 } container_record_t;
@@ -454,7 +455,7 @@ static int run_supervisor(const char *rootfs)
 
     while (1) {
 
-        //STEP 3: Handle exited children (NO ZOMBIES)
+        //Handle exited children (NO ZOMBIES)
         int status;
         pid_t exited_pid;
 
@@ -467,10 +468,15 @@ static int run_supervisor(const char *rootfs)
             while (curr) {
                 if (curr->host_pid == exited_pid) {
 
-                    if (WIFEXITED(status)) {
+                    //Correct lifecycle handling
+                    if (curr->stop_requested) {
+                        curr->state = CONTAINER_STOPPED;
+                    }
+                    else if (WIFEXITED(status)) {
                         curr->state = CONTAINER_EXITED;
                         curr->exit_code = WEXITSTATUS(status);
-                    } else if (WIFSIGNALED(status)) {
+                    }
+                    else if (WIFSIGNALED(status)) {
                         curr->state = CONTAINER_KILLED;
                         curr->exit_signal = WTERMSIG(status);
                     }
@@ -488,20 +494,18 @@ static int run_supervisor(const char *rootfs)
         //Read control request from FIFO
         int n = read(fd, &req, sizeof(req));
 
-        // prevent busy loop if no data
+        // prevent busy loop
         if (n <= 0) {
             usleep(100000);
             continue;
         }
 
-        // process only valid request
+        //Process request
         if (n == sizeof(req)) {
 
             printf("Received command kind: %d\n", req.kind);
 
-            // =====================================================
-            //CMD_START: start new container
-            // =====================================================
+            //CMD_START
             if (req.kind == CMD_START) {
 
                 printf("Starting container: %s\n", req.container_id);
@@ -524,7 +528,7 @@ static int run_supervisor(const char *rootfs)
 
                 printf("Container started with PID: %d\n", pid);
 
-                //STEP 2: STORE METADATA
+                //STORE METADATA
                 pthread_mutex_lock(&ctx.metadata_lock);
 
                 container_record_t *new_container = malloc(sizeof(container_record_t));
@@ -536,7 +540,7 @@ static int run_supervisor(const char *rootfs)
 
                 memset(new_container, 0, sizeof(*new_container));
 
-                strncpy(new_container->id, req.container_id, CONTAINER_ID_LEN - 1);
+                snprintf(new_container->id, CONTAINER_ID_LEN, "%s", req.container_id);
                 new_container->host_pid = pid;
                 new_container->started_at = time(NULL);
                 new_container->state = CONTAINER_RUNNING;
@@ -544,10 +548,11 @@ static int run_supervisor(const char *rootfs)
                 new_container->soft_limit_bytes = req.soft_limit_bytes;
                 new_container->hard_limit_bytes = req.hard_limit_bytes;
 
+                new_container->stop_requested = 0; //initialize
+
                 snprintf(new_container->log_path, PATH_MAX,
                          "logs/%s.log", req.container_id);
 
-                // insert at head
                 new_container->next = ctx.containers;
                 ctx.containers = new_container;
 
@@ -557,9 +562,7 @@ static int run_supervisor(const char *rootfs)
                        req.container_id, pid);
             }
 
-            // =====================================================
-            //CMD_PS: print container list
-            // =====================================================
+            //CMD_PS
             else if (req.kind == CMD_PS) {
 
                 pthread_mutex_lock(&ctx.metadata_lock);
@@ -581,6 +584,39 @@ static int run_supervisor(const char *rootfs)
                 }
 
                 printf("======================\n\n");
+
+                pthread_mutex_unlock(&ctx.metadata_lock);
+            }
+
+            //CMD_STOP
+            else if (req.kind == CMD_STOP) {
+
+                pthread_mutex_lock(&ctx.metadata_lock);
+
+                container_record_t *curr = ctx.containers;
+                int found = 0;
+
+                while (curr) {
+                    if (strcmp(curr->id, req.container_id) == 0) {
+
+                        found = 1;
+
+                        printf("Stopping container: %s (PID %d)\n",
+                               curr->id, curr->host_pid);
+
+                        curr->stop_requested = 1;
+                        if (kill(curr->host_pid, SIGKILL) < 0) {
+                            perror("kill");
+                        }
+
+                        break;
+                    }
+                    curr = curr->next;
+                }
+
+                if (!found) {
+                    printf("Container %s not found.\n", req.container_id);
+                }
 
                 pthread_mutex_unlock(&ctx.metadata_lock);
             }
@@ -630,6 +666,25 @@ static int cmd_start(int argc, char *argv[])
        close(fd);
        return 1;
     }
+    close(fd);
+    return 0;
+}
+
+static int send_control_request(const control_request_t *req)
+{
+    int fd = open("/tmp/engine_fifo", O_WRONLY);
+    if (fd < 0) {
+        perror("open fifo");
+        return 1;
+    }
+
+    ssize_t w = write(fd, req, sizeof(*req));
+    if (w < 0) {
+        perror("write");
+        close(fd);
+        return 1;
+    }
+
     close(fd);
     return 0;
 }
@@ -710,19 +765,20 @@ static int cmd_logs(int argc, char *argv[])
     return send_control_request(&req);
 }
 
-static int cmd_stop(int argc, char *argv[])
+static int cmd_stop(const char *id)
 {
     control_request_t req;
 
-    if (argc < 3) {
-        fprintf(stderr, "Usage: %s stop <id>\n", argv[0]);
-        return 1;
-    }
-
+    // clear struct
     memset(&req, 0, sizeof(req));
-    req.kind = CMD_STOP;
-    strncpy(req.container_id, argv[2], sizeof(req.container_id) - 1);
 
+    // set command type
+    req.kind = CMD_STOP;
+
+    // copy container id safely
+    snprintf(req.container_id, CONTAINER_ID_LEN, "%s", id);
+
+    // send request to supervisor
     return send_control_request(&req);
 }
 
@@ -733,6 +789,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // supervisor
     if (strcmp(argv[1], "supervisor") == 0) {
         if (argc < 3) {
             fprintf(stderr, "Usage: %s supervisor <base-rootfs>\n", argv[0]);
@@ -741,21 +798,36 @@ int main(int argc, char *argv[])
         return run_supervisor(argv[2]);
     }
 
-    if (strcmp(argv[1], "start") == 0)
+    // start
+    if (strcmp(argv[1], "start") == 0) {
         return cmd_start(argc, argv);
+    }
 
-    if (strcmp(argv[1], "run") == 0)
+    // run
+    if (strcmp(argv[1], "run") == 0) {
         return cmd_run(argc, argv);
-
-    if (strcmp(argv[1], "ps") == 0)
+    }
+    
+    // ps
+    if (strcmp(argv[1], "ps") == 0) {
         return cmd_ps();
+    }
 
-    if (strcmp(argv[1], "logs") == 0)
+    // logs
+    if (strcmp(argv[1], "logs") == 0) {
         return cmd_logs(argc, argv);
+    }
 
-    if (strcmp(argv[1], "stop") == 0)
-        return cmd_stop(argc, argv);
+    // stop
+    if (strcmp(argv[1], "stop") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "Usage: %s stop <id>\n", argv[0]);
+            return 1;
+        }
+        return cmd_stop(argv[2]);
+    }
 
+    // fallback
     usage(argv[0]);
     return 1;
 }
