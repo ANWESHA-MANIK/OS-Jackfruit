@@ -10,7 +10,7 @@
  *
  * YOUR WORK: Fill in all sections marked // TODO.
  */
-
+#include <linux/timer.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/fs.h>
@@ -22,7 +22,6 @@
 #include <linux/pid.h>
 #include <linux/sched/signal.h>
 #include <linux/slab.h>
-#include <linux/timer.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
 
