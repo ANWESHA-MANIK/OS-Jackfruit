@@ -130,29 +130,33 @@ This ensures:
 
 ### 1. Container Start and Execution
 
-**File:** `phase1_container_start.png`
-Shows supervisor starting a container and executing commands inside it.
+![Container Start](phase1_container_start.png)
+
+This screenshot shows the supervisor starting a container using the `start` command. The container is created using namespaces and a shell is launched inside it.
 
 ---
 
 ### 2. Container Listing (ps Command)
 
-**File:** `phase3_ps_output.png`
-Displays container ID, PID, and state (running/exited).
+![PS Output](phase3_ps_output.png)
+
+This screenshot shows the output of the `ps` command, which lists all containers along with their container ID, host PID, and current state.
 
 ---
 
 ### 3. Stop Command and Lifecycle Handling
 
-**File:** `phase5_stop_and_ps.png`
-Shows stopping a container and correct exit detection.
+![Stop Command](phase5_stop_and_ps.png)
+
+This screenshot demonstrates stopping a container using the `stop` command. The supervisor correctly handles termination and updates the container state.
 
 ---
 
 ### 4. Logging System Output
 
-**File:** `phase6_logging_output.png`
-Shows container output being captured in log file.
+![Logging Output](phase6_logging_output.png)
+
+This screenshot shows the logging system capturing container output. The container’s stdout is redirected and stored in a log file (`logs/alpha.log`).
 
 ---
 
