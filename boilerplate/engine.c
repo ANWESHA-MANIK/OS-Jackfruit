@@ -482,6 +482,31 @@ int unregister_from_monitor(int monitor_fd, const char *container_id, pid_t host
  *   - accept control requests and update container state
  *   - reap children and respond to signals
  */
+ typedef struct {
+    int pipe_fd;
+    char container_id[CONTAINER_ID_LEN];
+    bounded_buffer_t *log_buffer;
+} pipe_reader_args_t;
+
+static void *pipe_reader_thread(void *arg) {
+    pipe_reader_args_t *args = (pipe_reader_args_t *)arg;
+    char buf[LOG_CHUNK_SIZE];
+    ssize_t r;
+
+    while ((r = read(args->pipe_fd, buf, sizeof(buf))) > 0) {
+        log_item_t item;
+        memset(&item, 0, sizeof(item));
+        snprintf(item.container_id, CONTAINER_ID_LEN, "%s", args->container_id);
+        item.container_id[CONTAINER_ID_LEN - 1] = '\0';
+        memcpy(item.data, buf, r);
+        item.length = r;
+        bounded_buffer_push(args->log_buffer, &item);
+    }
+    close(args->pipe_fd);
+    free(args);
+    return NULL;
+}
+
 static int run_supervisor(const char *rootfs)
 {
     supervisor_ctx_t ctx;
@@ -518,8 +543,15 @@ static int run_supervisor(const char *rootfs)
      *   4) spawn the logger thread
      *   5) enter the supervisor event loop
      */
+     
+     ctx.monitor_fd = open("/dev/container_monitor", O_RDWR);
+     if (ctx.monitor_fd < 0) {
+        perror("open monitor device");
+     } 
 
     printf("Supervisor started with rootfs: %s\n", rootfs);
+    // create FIFO for IPC
+    mkfifo("/tmp/engine_fifo", 0666);
 
     int fd = open("/tmp/engine_fifo", O_RDONLY);
     if (fd < 0) {
@@ -555,6 +587,9 @@ static int run_supervisor(const char *rootfs)
                         curr->state = CONTAINER_KILLED;
                         curr->exit_signal = WTERMSIG(status);
                     }
+                    
+                    // unregister from monitor
+                    unregister_from_monitor(ctx.monitor_fd, curr->id, curr->host_pid);
 
                     printf("Container %s exited (PID %d)\n",
                            curr->id, exited_pid);
@@ -614,6 +649,18 @@ static int run_supervisor(const char *rootfs)
                 close(pipefd[1]); // parent closes write end
 
                 printf("Container started with PID: %d\n", pid);
+                // register with kernel monitor
+                struct monitor_request mreq;
+                memset(&mreq, 0, sizeof(mreq));
+
+                mreq.pid = pid;
+                strncpy(mreq.container_id, req.container_id, sizeof(mreq.container_id)-1);
+                mreq.soft_limit_bytes = req.soft_limit_bytes;
+                mreq.hard_limit_bytes = req.hard_limit_bytes;
+
+                if (ioctl(ctx.monitor_fd, MONITOR_REGISTER, &mreq) < 0) {
+                  perror("monitor register");
+                }
 
                 //store metadata
                 pthread_mutex_lock(&ctx.metadata_lock);
@@ -640,25 +687,16 @@ static int run_supervisor(const char *rootfs)
                 printf("Stored container: %s (PID %d)\n",
                        req.container_id, pid);
 
-                //read logs from pipe → push to buffer
-                char buf[LOG_CHUNK_SIZE];
-                ssize_t r;
+               // NEW: Spawn a thread to read logs so the supervisor doesn't freeze
+              pipe_reader_args_t *reader_args = malloc(sizeof(pipe_reader_args_t));
+              reader_args->pipe_fd = pipefd[0];
+              strncpy(reader_args->container_id, req.container_id, CONTAINER_ID_LEN);
+              reader_args->log_buffer = &ctx.log_buffer;
 
-                while ((r = read(pipefd[0], buf, sizeof(buf))) > 0) {
-                    log_item_t item;
-                    memset(&item, 0, sizeof(item));
-
-                    snprintf(item.container_id, CONTAINER_ID_LEN, "%s", req.container_id);
-                    item.container_id[CONTAINER_ID_LEN - 1] = '\0';
-                    memcpy(item.data, buf, r);
-                    item.length = r;
-
-                    bounded_buffer_push(&ctx.log_buffer, &item);
-                }
-
-                close(pipefd[0]);
+              pthread_t reader_tid;
+              pthread_create(&reader_tid, NULL, pipe_reader_thread, reader_args);
+              pthread_detach(reader_tid); // Runs in background and cleans up itself
             }
-
             //CMD_PS
             else if (req.kind == CMD_PS) {
 
@@ -749,6 +787,7 @@ static int cmd_start(int argc, char *argv[])
 
     req.soft_limit_bytes = DEFAULT_SOFT_LIMIT;
     req.hard_limit_bytes = DEFAULT_HARD_LIMIT;
+    parse_optional_flags(&req, argc, argv, 5);
 
     // send request to supervisor (FIFO)
     int fd = open("/tmp/engine_fifo", O_WRONLY);
