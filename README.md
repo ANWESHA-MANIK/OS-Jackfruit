@@ -260,7 +260,7 @@ dmesg | tail
 ![Limit](monitor_limit_exceeded.jpeg)
 
 ### Monitor Unload
-![Unload](monitor_unload.jpeg)
+![Unload](monitor_unloaded.jpeg)
 
 ---
 
