@@ -38,6 +38,7 @@
  *   - track PID, container ID, soft limit, and hard limit
  *   - remember whether the soft-limit warning was already emitted
  *   - include `struct list_head` linkage
+    Each monitor_node is a file that stores everything about one process and connects it to other processes in a list.
  * ============================================================== */
 
 struct monitor_node {
@@ -58,6 +59,9 @@ struct monitor_node {
  *
  * You may choose either a mutex or a spinlock, but your README must
  * justify the choice in terms of the code paths you implemented.
+         IOCTL → adds/removes nodes
+* Timer → reads/removes nodes
+     Create a global list of processes and protect it using a lock for safe concurrent access.
  * ============================================================== */
 
 static LIST_HEAD(monitor_list);
@@ -133,6 +137,16 @@ static void kill_process(const char *container_id,
 
 /* ---------------------------------------------------------------
  * Timer Callback
+ TODO 3: Implement periodic monitoring.
+     *heart of your module.It runs every 1 second and checks all processes.
+     * Requirements:
+     *   - iterate through tracked entries safely
+     *   - remove entries for exited processes
+     *   - emit soft-limit warning once per entry
+     *   - enforce hard limit and then remove the entry
+     *   - avoid use-after-free while deleting during iteration
+A global kernel linked list stores all monitored processes, and a mutex ensures safe concurrent access between IOCTL operations and the timer callback.
+ Periodically scans all processes, checks memory usage, and enforces soft (warn once) and hard (kill + remove) limits safely.
  * --------------------------------------------------------------- */
 static void timer_callback(struct timer_list *t)
 {
@@ -214,6 +228,15 @@ static long monitor_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
     printk(KERN_INFO
            "[container_monitor] Unregister request container=%s pid=%d\n",
            req.container_id, req.pid);
+ /* =============================================================
+         * TODO 4: Add a monitored entry.
+         *
+         * Requirements:
+         *   - allocate and initialize one node from req
+         *   - validate allocation and limits
+         *   - insert into the shared list under the chosen lock
+         Creates and initializes a new monitoring node for a process and safely inserts it into the global list.
+         * ============================================================== */
 
     struct monitor_node *node, *tmp;
 
@@ -278,7 +301,11 @@ static int __init monitor_init(void)
     return 0;
 }
 
-/* --- Provided --- */
+/* todo 5:Unregister → Remove a Process from Monitoring
+    *Node is removed from linked list
+* Memory is freed (no leak)
+Searches for the process in the list, safely removes its node, frees memory, and stops its monitoring
+--- Provided --- */
 static void __exit monitor_exit(void)
 {
     timer_delete_sync(&monitor_timer);
