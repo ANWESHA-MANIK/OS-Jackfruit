@@ -245,22 +245,22 @@ dmesg | tail
 ---
 
 ### Monitor Compile
-![Compile](monitor_compile.png)
+![Compile](monitor_compile.jpeg)
 
 ### Monitor Loaded
-![Loaded](monitor_lsmod.png)
+![Loaded](monitor_lsmod.jpeg)
 
 ### Monitor dmesg Load
-![Dmesg Load](monitor_dmesg_load.png)
+![Dmesg Load](monitor_dmesg_load.jpeg)
 
 ### Monitor Runtime
-![Runtime](monitor_runtime_logs.png)
+![Runtime](monitor_runtime_logs.jpeg)
 
 ### Limit Exceeded
-![Limit](monitor_limit_exceeded.png)
+![Limit](monitor_limit_exceeded.jpeg)
 
 ### Monitor Unload
-![Unload](monitor_unload.png)
+![Unload](monitor_unload.jpeg)
 
 ---
 
