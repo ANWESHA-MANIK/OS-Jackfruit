@@ -293,6 +293,7 @@ static void bounded_buffer_begin_shutdown(bounded_buffer_t *buffer)
  *   - block or fail according to your chosen policy when the buffer is full
  *   - wake consumers correctly
  *   - stop cleanly if shutdown begins
+ Adds log data into a thread-safe buffer while handling full-buffer conditions.(push)
  */
 int bounded_buffer_push(bounded_buffer_t *buffer, const log_item_t *item)
 {
@@ -325,6 +326,7 @@ int bounded_buffer_push(bounded_buffer_t *buffer, const log_item_t *item)
  *   - wait correctly while the buffer is empty
  *   - return a useful status when shutdown is in progress
  *   - avoid races with producers and shutdown
+ “Removes log data from the buffer safely while handling empty-buffer conditions.”(pop)
  */
 int bounded_buffer_pop(bounded_buffer_t *buffer, log_item_t *item)
 {
@@ -357,6 +359,7 @@ int bounded_buffer_pop(bounded_buffer_t *buffer, log_item_t *item)
  *   - remove log chunks from the bounded buffer
  *   - route each chunk to the correct per-container log file
  *   - exit cleanly when shutdown begins and pending work is drained
+ “Continuously consumes logs from the buffer and writes them to container log files.”
  */
 void *logging_thread(void *arg)
 {
@@ -396,8 +399,8 @@ void *logging_thread(void *arg)
  *   - working /proc inside container
  *   - stdout / stderr redirected to the supervisor logging path
  *   - configured command executed inside the container
+ “Creates an isolated container environment and executes the given command inside it.”
  */
- 
 static int child_fn(void *arg)
 {
     child_args_t *args = (child_args_t *)arg;
@@ -481,6 +484,7 @@ int unregister_from_monitor(int monitor_fd, const char *container_id, pid_t host
  *   - start the logging thread
  *   - accept control requests and update container state
  *   - reap children and respond to signals
+ “Enables communication between client and supervisor using a FIFO channel.”
  */
  typedef struct {
     int pipe_fd;
@@ -506,7 +510,7 @@ static void *pipe_reader_thread(void *arg) {
     free(args);
     return NULL;
 }
-
+//“Acts as the main controller that manages container creation, execution, and lifecycle.”
 static int run_supervisor(const char *rootfs)
 {
     supervisor_ctx_t ctx;
@@ -533,7 +537,7 @@ static int run_supervisor(const char *rootfs)
 
     //create logs directory + start logger thread
     mkdir(LOG_DIR, 0755);
-    pthread_create(&ctx.logger_thread, NULL, logging_thread, &ctx);
+    pthread_create(&ctx.logger_thread, NULL, logging_thread, &ctx); //Starts logging system
 
     /*
      * TODO:
@@ -550,7 +554,7 @@ static int run_supervisor(const char *rootfs)
      } 
 
     printf("Supervisor started with rootfs: %s\n", rootfs);
-    // create FIFO for IPC
+    // create FIFO for IPC (Communication channel)
     mkfifo("/tmp/engine_fifo", 0666);
 
     int fd = open("/tmp/engine_fifo", O_RDONLY);
@@ -561,7 +565,7 @@ static int run_supervisor(const char *rootfs)
 
     control_request_t req;
 
-    while (1) {
+    while (1) { //Keeps supervisor running
 
         //reap children (no zombies)
         int status;
@@ -766,7 +770,7 @@ static int run_supervisor(const char *rootfs)
 
     return 1;
 }
-
+//container start
 static int cmd_start(int argc, char *argv[])
 {
     control_request_t req;
@@ -848,7 +852,7 @@ static int cmd_run(int argc, char *argv[])
         .rootfs = rootfs,
         .argv = cmd
     };
-
+    //create new container
     pid_t pid = clone(child_fn,
                       (char *)stack + STACK_SIZE,
                       SIGCHLD | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNS,
