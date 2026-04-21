@@ -10,14 +10,15 @@ The runtime provides basic container lifecycle operations such as starting, list
 
 ## Key Features
 
-* Container creation using `clone()` with namespaces
-* Filesystem isolation using `chroot()`
-* Supervisor-based container lifecycle management
-* FIFO-based IPC between CLI and supervisor
-* Container metadata tracking (ID, PID, state)
-* `ps` command to list containers
-* `stop` command to terminate containers
-* Asynchronous logging system using pipe + bounded buffer + thread
+- Container creation using `clone()` with namespaces
+- Filesystem isolation using `chroot()`
+- Supervisor-based container lifecycle management
+- FIFO-based IPC between CLI and supervisor
+- Container metadata tracking (ID, PID, state)
+- `ps` command to list containers
+- `stop` command to terminate containers
+- Asynchronous logging system using pipe + bounded buffer + thread
+- Kernel-level memory monitoring using a custom module
 
 ---
 
@@ -25,10 +26,10 @@ The runtime provides basic container lifecycle operations such as starting, list
 
 ### Components
 
-* **engine.c** → User-space container runtime and supervisor
-* **monitor.c** → Kernel module for resource monitoring (handled separately)
-* **FIFO (/tmp/engine_fifo)** → Communication channel between CLI and supervisor
-* **Logging System** → Pipe + bounded buffer + logger thread
+- `engine.c` → User-space container runtime and supervisor  
+- `monitor.c` → Kernel module for memory monitoring  
+- FIFO (`/tmp/engine_fifo`) → Communication channel  
+- Logging System → Pipe + buffer + logger thread  
 
 ---
 
@@ -36,71 +37,63 @@ The runtime provides basic container lifecycle operations such as starting, list
 
 ### 1. Container Runtime
 
-* Containers are created using `clone()` with:
-
-  * PID namespace
-  * UTS namespace
-  * Mount namespace
-* `chroot()` is used for filesystem isolation
-* `/proc` is mounted inside each container
-* Default execution uses `/bin/sh`
+- Uses `clone()` with:
+  - PID namespace
+  - UTS namespace
+  - Mount namespace
+- Uses `chroot()` for filesystem isolation
+- Mounts `/proc` inside container
+- Runs `/bin/sh` by default
 
 ---
 
 ### 2. Supervisor
 
-* A long-running process that manages all containers
-* Receives commands via FIFO (`/tmp/engine_fifo`)
-* Handles:
-
-  * Container creation (`start`)
-  * Container termination (`stop`)
-  * Container listing (`ps`)
-* Uses `waitpid()` to:
-
-  * Detect container exit
-  * Prevent zombie processes
-  * Update container state
+- Long-running process
+- Receives commands via FIFO
+- Handles:
+  - start
+  - stop
+  - ps
+- Uses `waitpid()` to:
+  - avoid zombies
+  - track container exit
 
 ---
 
 ### 3. Metadata Management
 
-Each container is tracked using a linked list structure containing:
+Each container stores:
 
-* Container ID
-* Host PID
-* State (running, stopped, exited, killed)
-* Start time
-* Exit code / signal
-* Log file path
+- Container ID  
+- PID  
+- State  
+- Start time  
+- Exit info  
+- Log path  
 
-Thread-safe access is ensured using a mutex.
+Uses mutex for thread safety.
 
 ---
 
 ### 4. Commands
 
-#### Start Container
-
+Start:
 ```bash
 ./engine start <id> <rootfs> <command>
 ```
 
-#### List Containers
-
+PS:
 ```bash
 ./engine ps
 ```
 
-#### Stop Container
-
+Stop:
 ```bash
 ./engine stop <id>
 ```
 
-#### View Logs
-
+Logs:
 ```bash
 cat logs/<id>.log
 ```
@@ -109,89 +102,194 @@ cat logs/<id>.log
 
 ### 5. Logging System
 
-* Each container’s stdout/stderr is redirected using a pipe
-* Supervisor reads from the pipe
-* Logs are pushed into a bounded buffer (producer-consumer model)
-* A dedicated logging thread writes logs to:
+Flow:
+
+Container → Pipe → Buffer → Logger Thread → File
+
+- Uses producer-consumer model
+- Prevents blocking
+- Logs saved in:
 
 ```
 logs/<container_id>.log
 ```
 
-This ensures:
+---
 
-* Non-blocking logging
-* Thread-safe data handling
-* Separation of execution and logging
+### 6. Kernel Monitor (monitor.c)
+
+This is a Linux kernel module used to monitor and control memory usage.
+
+#### Features
+
+- Registers container processes
+- Tracks memory usage
+- Enforces soft and hard limits
+- Kills process if hard limit exceeded
+- Logs via `dmesg`
+
+---
+
+#### Compilation
+
+```bash
+make
+```
+
+Creates:
+```
+monitor.ko
+```
+
+---
+
+#### Load Module
+
+```bash
+sudo insmod monitor.ko
+```
+
+Check:
+```bash
+lsmod | grep monitor
+```
+
+---
+
+#### Kernel Logs
+
+```bash
+dmesg | tail
+```
+
+Example:
+```
+Monitor module loaded
+Major number: 240
+```
+
+---
+
+#### Runtime Interaction
+
+```c
+ioctl(monitor_fd, MONITOR_REGISTER, &req);
+```
+
+Kernel receives:
+- PID
+- Soft limit
+- Hard limit
+
+---
+
+#### Memory Monitoring
+
+```bash
+dmesg | tail
+```
+
+Example:
+```
+Monitor: Received PID 2345
+Monitor: PID 2345 memory = 1024 KB
+```
+
+---
+
+#### Limit Enforcement
+
+```
+Monitor: PID 3000 memory = 25000 KB
+SOFT LIMIT exceeded for PID 3000
+HARD LIMIT exceeded -> Killing PID 3000
+```
+
+---
+
+#### Testing
+
+```bash
+sudo ./memory_hog
+```
+
+---
+
+#### Unload Module
+
+```bash
+sudo rmmod monitor
+```
+
+Check:
+```bash
+dmesg | tail
+```
 
 ---
 
 ## Screenshots
 
-### 1. Container Start and Execution
+### Container Start
+![Container](phase1_container_start.png)
 
-![Container Start](phase1_container_start.png)
+### PS Output
+![PS](phase3_ps_output.png)
 
-This screenshot shows the supervisor starting a container using the `start` command. The container is created using namespaces and a shell is launched inside it.
+### Stop Command
+![Stop](phase5_stop_and_ps.png)
 
----
-
-### 2. Container Listing (ps Command)
-
-![PS Output](phase3_ps_output.png)
-
-This screenshot shows the output of the `ps` command, which lists all containers along with their container ID, host PID, and current state.
+### Logs
+![Logs](phase6_logging_output.png)
 
 ---
 
-### 3. Stop Command and Lifecycle Handling
+### Monitor Compile
+![Compile](monitor_compile.png)
 
-![Stop Command](phase5_stop_and_ps.png)
+### Monitor Loaded
+![Loaded](monitor_lsmod.png)
 
-This screenshot demonstrates stopping a container using the `stop` command. The supervisor correctly handles termination and updates the container state.
+### Monitor dmesg Load
+![Dmesg Load](monitor_dmesg_load.png)
 
----
+### Monitor Runtime
+![Runtime](monitor_runtime_logs.png)
 
-### 4. Logging System Output
+### Limit Exceeded
+![Limit](monitor_limit_exceeded.png)
 
-![Logging Output](phase6_logging_output.png)
-
-This screenshot shows the logging system capturing container output. The container’s stdout is redirected and stored in a log file (`logs/alpha.log`).
+### Monitor Unload
+![Unload](monitor_unload.png)
 
 ---
 
 ## How to Run
 
-### 1. Start Supervisor
-
+Start supervisor:
 ```bash
-cd boilerplate
 rm -f /tmp/engine_fifo
 mkfifo /tmp/engine_fifo
 sudo ./engine supervisor ../rootfs-base
 ```
 
-### 2. Start Container
-
+Start container:
 ```bash
 ./engine start alpha ../rootfs-alpha /bin/sh
 ```
 
-### 3. Inside Container
-
+Inside container:
 ```bash
 echo hello
 exit
 ```
 
-### 4. View Containers
-
+Check:
 ```bash
 ./engine ps
 ```
 
-### 5. View Logs
-
+Logs:
 ```bash
 cat logs/alpha.log
 ```
@@ -200,23 +298,21 @@ cat logs/alpha.log
 
 ## Design Decisions
 
-* **FIFO IPC** chosen for simplicity and reliability
-* **Linked list metadata** for dynamic container tracking
-* **Producer-consumer logging** for efficient asynchronous logging
-* **Namespaces + chroot** for lightweight container isolation
+- FIFO for IPC (simple)
+- Linked list for tracking
+- Producer-consumer logging
+- Namespaces for isolation
 
 ---
 
 ## Limitations
 
-* Optional flags (`--soft-mib`, `--hard-mib`, `--nice`) not implemented
-* No container restart functionality
-* Kernel monitor integration handled separately
+- No restart support
+- Limited error handling
+- Optional flags not fully used
 
 ---
 
 ## Conclusion
 
-This project successfully implements a minimal container runtime with process isolation, lifecycle management, and asynchronous logging. It demonstrates key operating system concepts such as process control, inter-process communication, synchronization, and namespace-based isolation.
-
----
+This project builds a mini container runtime with logging and kernel-level monitoring, demonstrating OS concepts like namespaces, IPC, synchronization, and kernel interaction.
